@@ -634,6 +634,9 @@ pub const CURLOPT_DOH_SSL_VERIFYSTATUS: CURLoption = CURLOPTTYPE_LONG + 308;
 pub const CURLOPT_CAINFO_BLOB: CURLoption = CURLOPTTYPE_BLOB + 309;
 pub const CURLOPT_PROXY_CAINFO_BLOB: CURLoption = CURLOPTTYPE_BLOB + 310;
 
+pub const CURLOPT_PREREQFUNCTION: CURLoption = CURLOPTTYPE_FUNCTIONPOINT + 312;
+pub const CURLOPT_PREREQDATA: CURLoption = CURLOPTTYPE_OBJECTPOINT + 313;
+
 pub const CURL_IPRESOLVE_WHATEVER: c_int = 0;
 pub const CURL_IPRESOLVE_V4: c_int = 1;
 pub const CURL_IPRESOLVE_V6: c_int = 2;
@@ -1021,6 +1024,9 @@ pub type curlsocktype = __enum_ty;
 pub const CURLSOCKTYPE_IPCXN: curlsocktype = 0;
 pub const CURLSOCKTYPE_ACCEPT: curlsocktype = 1;
 pub const CURLSOCKTYPE_LAST: curlsocktype = 2;
+
+pub type curl_prereq_callback =
+    extern "C" fn(*mut c_void, *const c_char, *const c_char, c_int, c_int) -> c_int;
 
 #[repr(C)]
 pub struct curl_sockaddr {

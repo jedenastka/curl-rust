@@ -297,6 +297,11 @@ pub trait Handler {
             socket.into_raw_socket()
         }
     }
+
+    /// Callback called before a request is made
+    fn prereq(&mut self) -> bool {
+        true
+    }
 }
 
 pub fn debug(kind: InfoType, data: &[u8]) {
@@ -674,6 +679,12 @@ impl<H: Handler> Easy2<H> {
             .expect("failed to set open socket callback");
         self.setopt_ptr(curl_sys::CURLOPT_OPENSOCKETDATA, ptr)
             .expect("failed to set open socket callback");
+
+        let cb: curl_sys::curl_prereq_callback = prereq_cb::<H>;
+        self.setopt_ptr(curl_sys::CURLOPT_PREREQFUNCTION, cb as *const _)
+            .expect("failed to set prereq callback");
+        self.setopt_ptr(curl_sys::CURLOPT_PREREQDATA, ptr)
+            .expect("failed to set prereq callback");
     }
 
     #[cfg(need_openssl_probe)]
@@ -3677,6 +3688,26 @@ extern "C" fn opensocket_cb<H: Handler>(
             .unwrap_or(curl_sys::CURL_SOCKET_BAD)
     });
     res.unwrap_or(curl_sys::CURL_SOCKET_BAD)
+}
+
+extern "C" fn prereq_cb<H: Handler>(
+    data: *mut c_void,
+    _: *const c_char,
+    _: *const c_char,
+    _: c_int,
+    _: c_int,
+) -> c_int {
+    let keep_going = panic::catch(|| unsafe {
+        (*(data as *mut Inner<H>))
+            .handler
+            .prereq()
+    })
+    .unwrap_or(false);
+    if keep_going {
+        0
+    } else {
+        1
+    }
 }
 
 fn double_seconds_to_duration(seconds: f64) -> Duration {
