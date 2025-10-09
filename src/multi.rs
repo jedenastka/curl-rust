@@ -3,7 +3,7 @@
 use std::fmt;
 use std::marker;
 use std::ptr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use libc::{c_char, c_int, c_long, c_short, c_void};
@@ -29,7 +29,7 @@ use crate::{Error, MultiError};
 ///
 /// [multi tutorial]: https://curl.haxx.se/libcurl/c/libcurl-multi.html
 pub struct Multi {
-    raw: Arc<RawMulti>,
+    raw: Arc<Mutex<RawMulti>>,
     data: Box<MultiData>,
 }
 
@@ -37,6 +37,8 @@ pub struct Multi {
 struct RawMulti {
     handle: *mut curl_sys::CURLM,
 }
+
+unsafe impl Send for RawMulti {}
 
 struct MultiData {
     socket: Box<dyn FnMut(Socket, SocketEvents, usize) + Send>,
@@ -73,16 +75,16 @@ pub struct Easy2Handle<H> {
     // Safety: This *must* be before `easy` as it must be dropped first.
     guard: DetachGuard,
     easy: Easy2<H>,
-    // This is now effectively bound to a `Multi`, so it is no longer sendable.
-    _marker: marker::PhantomData<&'static Multi>,
 }
 
 /// A guard struct which guarantees that `curl_multi_remove_handle` will be
 /// called on an easy handle, either manually or on drop.
 struct DetachGuard {
-    multi: Arc<RawMulti>,
+    multi: Arc<Mutex<RawMulti>>,
     easy: *mut curl_sys::CURL,
 }
+
+unsafe impl Send for DetachGuard {}
 
 /// Notification of the events that have happened on a socket.
 ///
@@ -131,7 +133,7 @@ impl Multi {
             let ptr = curl_sys::curl_multi_init();
             assert!(!ptr.is_null());
             Multi {
-                raw: Arc::new(RawMulti { handle: ptr }),
+                raw: Arc::new(Mutex::new(RawMulti { handle: ptr })),
                 data: Box::new(MultiData {
                     socket: Box::new(|_, _, _| ()),
                     timer: Box::new(|_| true),
@@ -226,7 +228,7 @@ impl Multi {
     pub fn assign(&self, socket: Socket, token: usize) -> Result<(), MultiError> {
         unsafe {
             cvt(curl_sys::curl_multi_assign(
-                self.raw.handle,
+                self.raw.lock().unwrap().handle,
                 socket,
                 token as *mut _,
             ))?;
@@ -380,7 +382,7 @@ impl Multi {
     }
 
     fn setopt_long(&mut self, opt: curl_sys::CURLMoption, val: c_long) -> Result<(), MultiError> {
-        unsafe { cvt(curl_sys::curl_multi_setopt(self.raw.handle, opt, val)) }
+        unsafe { cvt(curl_sys::curl_multi_setopt(self.raw.lock().unwrap().handle, opt, val)) }
     }
 
     fn setopt_ptr(
@@ -388,7 +390,7 @@ impl Multi {
         opt: curl_sys::CURLMoption,
         val: *const c_char,
     ) -> Result<(), MultiError> {
-        unsafe { cvt(curl_sys::curl_multi_setopt(self.raw.handle, opt, val)) }
+        unsafe { cvt(curl_sys::curl_multi_setopt(self.raw.lock().unwrap().handle, opt, val)) }
     }
 
     /// Add an easy handle to a multi session
@@ -416,7 +418,7 @@ impl Multi {
         easy.transfer();
 
         unsafe {
-            cvt(curl_sys::curl_multi_add_handle(self.raw.handle, easy.raw()))?;
+            cvt(curl_sys::curl_multi_add_handle(self.raw.lock().unwrap().handle, easy.raw()))?;
         }
         Ok(EasyHandle {
             guard: DetachGuard {
@@ -431,7 +433,7 @@ impl Multi {
     /// Same as `add`, but works with the `Easy2` type.
     pub fn add2<H>(&self, easy: Easy2<H>) -> Result<Easy2Handle<H>, MultiError> {
         unsafe {
-            cvt(curl_sys::curl_multi_add_handle(self.raw.handle, easy.raw()))?;
+            cvt(curl_sys::curl_multi_add_handle(self.raw.lock().unwrap().handle, easy.raw()))?;
         }
         Ok(Easy2Handle {
             guard: DetachGuard {
@@ -439,7 +441,6 @@ impl Multi {
                 easy: easy.raw(),
             },
             easy,
-            _marker: marker::PhantomData,
         })
     }
 
@@ -482,7 +483,7 @@ impl Multi {
         let mut queue = 0;
         unsafe {
             loop {
-                let ptr = curl_sys::curl_multi_info_read(self.raw.handle, &mut queue);
+                let ptr = curl_sys::curl_multi_info_read(self.raw.lock().unwrap().handle, &mut queue);
                 if ptr.is_null() {
                     break;
                 }
@@ -516,7 +517,7 @@ impl Multi {
         let mut remaining = 0;
         unsafe {
             cvt(curl_sys::curl_multi_socket_action(
-                self.raw.handle,
+                self.raw.lock().unwrap().handle,
                 socket,
                 events.bits,
                 &mut remaining,
@@ -544,7 +545,7 @@ impl Multi {
         let mut remaining = 0;
         unsafe {
             cvt(curl_sys::curl_multi_socket_action(
-                self.raw.handle,
+                self.raw.lock().unwrap().handle,
                 curl_sys::CURL_SOCKET_BAD,
                 0,
                 &mut remaining,
@@ -573,7 +574,7 @@ impl Multi {
     pub fn get_timeout(&self) -> Result<Option<Duration>, MultiError> {
         let mut ms = 0;
         unsafe {
-            cvt(curl_sys::curl_multi_timeout(self.raw.handle, &mut ms))?;
+            cvt(curl_sys::curl_multi_timeout(self.raw.lock().unwrap().handle, &mut ms))?;
             if ms == -1 {
                 Ok(None)
             } else {
@@ -612,7 +613,7 @@ impl Multi {
         unsafe {
             let mut ret = 0;
             cvt(curl_sys::curl_multi_wait(
-                self.raw.handle,
+                self.raw.lock().unwrap().handle,
                 waitfds.as_mut_ptr() as *mut _,
                 waitfds.len() as u32,
                 timeout_ms,
@@ -733,7 +734,7 @@ impl Multi {
     pub fn perform(&self) -> Result<u32, MultiError> {
         unsafe {
             let mut ret = 0;
-            cvt(curl_sys::curl_multi_perform(self.raw.handle, &mut ret))?;
+            cvt(curl_sys::curl_multi_perform(self.raw.lock().unwrap().handle, &mut ret))?;
             Ok(ret as u32)
         }
     }
@@ -781,7 +782,7 @@ impl Multi {
             let write = write.map(|r| r as *mut _).unwrap_or(ptr::null_mut());
             let except = except.map(|r| r as *mut _).unwrap_or(ptr::null_mut());
             cvt(curl_sys::curl_multi_fdset(
-                self.raw.handle,
+                self.raw.lock().unwrap().handle,
                 read,
                 write,
                 except,
@@ -811,7 +812,7 @@ impl Multi {
 
     /// Get a pointer to the raw underlying CURLM handle.
     pub fn raw(&self) -> *mut curl_sys::CURLM {
-        self.raw.handle
+        self.raw.lock().unwrap().handle
     }
 }
 
@@ -1065,7 +1066,7 @@ impl DetachGuard {
         if !self.easy.is_null() {
             unsafe {
                 cvt(curl_sys::curl_multi_remove_handle(
-                    self.multi.handle,
+                    self.multi.lock().unwrap().handle,
                     self.easy,
                 ))?
             }
